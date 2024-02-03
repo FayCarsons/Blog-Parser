@@ -1,5 +1,6 @@
 use chrono::NaiveDate;
 use clap::Parser;
+use std::cmp::Ordering;
 use std::{
     fs,
     path::PathBuf,
@@ -65,7 +66,7 @@ impl From<InternalPost> for Post {
 }
 
 const POST_TYPE: &str =
-    "export type Post = {name: string, date: string, header: string, content: string[]}";
+    "export type Post = {name: string, date: string, header: string, body: string}";
 
 fn replace(repl: &ReplacementMap, html: &str) -> String {
     let mut buffer = html.to_owned();
@@ -117,6 +118,7 @@ fn main() -> std::io::Result<()> {
     for path in md {
         let filename = path
             .file_name()
+            
             .unwrap_or_else(|| panic!("Error in file {:?}", path));
         let content = fs::read_to_string(&path)?;
         let (date, rest) = content.split_once('\n').unwrap_or_else(|| panic!("{} does not have a date in the first line",
@@ -131,7 +133,7 @@ fn main() -> std::io::Result<()> {
             filename.to_str().unwrap()));
         let (header, body) = (header.to_owned(), body.to_owned());
 
-        let title = filename.to_str().unwrap().to_owned();
+        let title = filename.to_str().unwrap().replace(".md", "");
 
         let post = InternalPost {
             title,
@@ -142,10 +144,10 @@ fn main() -> std::io::Result<()> {
         post_objects.push(post);
     }
 
-    post_objects.sort_by_key(|post| post.date);
+    post_objects.sort_by(|a, b| Ordering::reverse(a.date.cmp(&b.date)));
 
     for post @ InternalPost { title, .. } in post_objects.iter() {
-        titles.push(format!("\'/{title}\', "));
+        titles.push(format!("{title}"));
         let json = serde_json::to_string_pretty(&Post::from(post.clone()))
             .unwrap_or_else(|_| panic!("Serializaion error in post: {title}"));
         let path = output.join(format!("{title}.json"));
@@ -153,7 +155,7 @@ fn main() -> std::io::Result<()> {
     }
     
     let titles_arr = serde_json::to_string_pretty(&titles).expect("Invalid title");
-    let ts_file = format!("{POST_TYPE}\n\n export posts: string[] = {titles_arr};");
+    let ts_file = format!("{POST_TYPE}\n\n export const posts: string[] = {titles_arr};");
 
     let js = if let Some(path) = js_path {
         path
