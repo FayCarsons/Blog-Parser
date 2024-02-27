@@ -1,13 +1,14 @@
+#[cfg(test)]
+mod tests;
+
 use chrono::NaiveDate;
 use clap::Parser;
+use regex::{Captures, Regex};
 use std::cmp::Ordering;
-use std::{
-    fs,
-    path::PathBuf,
-};
+use std::{fmt::Write, fs, path::PathBuf};
 
-use std::collections::HashMap;
 use serde_json::from_str;
+use std::collections::HashMap;
 
 type Attribute<'a> = &'a str;
 type Tag<'a> = &'a str;
@@ -69,20 +70,27 @@ const POST_TYPE: &str =
     "export type Post = {name: string, date: string, header: string, body: string}";
 
 fn replace(repl: &ReplacementMap, html: &str) -> String {
-    let mut buffer = html.to_owned();
-    for (elt, map) in repl.iter() {
-        let tag = format!("<{elt}>");
-        println!("{tag}");
-        while buffer.contains(&tag) {
-            let attributes = map
-                .iter()
-                .map(|(attr, val)| format!("{attr}=\"{val}\" "))
-                .collect::<String>();
-            buffer = buffer.replace(&tag, &format!("{} {}>", &tag[..tag.len() - 1], attributes));
-        }
-    }
+    let re = Regex::new(r"(<(\w+)([^>]*)>)").unwrap();
 
-    buffer
+    let aux = |caps: &Captures| -> String {
+        let tag = &caps[2];
+        let existing_attrs = &caps[3];
+
+        let attrs = if let Some(m) = repl.get(tag) {
+            m.iter()
+        } else {
+            return caps[0].to_string();
+        };
+
+        let attrs = attrs.fold(String::new(), |mut acc, (attr, value)| {
+            let _ = write!(acc, r#" {attr}="{value}""#);
+            acc
+        });
+
+        format!("<{}{}{}>", tag, existing_attrs, attrs)
+    };
+
+    re.replace_all(html, aux).into_owned()
 }
 
 fn main() -> std::io::Result<()> {
@@ -110,27 +118,39 @@ fn main() -> std::io::Result<()> {
         fs::create_dir(&output)?;
     }
 
-    let json = fs::read_to_string(&replacements).unwrap_or_else(|_| panic!("JSON replacement map {} does not exist",
-        replacements.display()));
+    let json = fs::read_to_string(&replacements).unwrap_or_else(|_| {
+        panic!(
+            "JSON replacement map {} does not exist",
+            replacements.display()
+        )
+    });
     let replacement_map =
         from_str::<ReplacementMap>(&json).expect("Invalid structure in JSON replacement map: ");
 
     for path in md {
         let filename = path
             .file_name()
-            
             .unwrap_or_else(|| panic!("Error in file {:?}", path));
         let content = fs::read_to_string(&path)?;
-        let (date, rest) = content.split_once('\n').unwrap_or_else(|| panic!("{} does not have a date in the first line",
-            filename.to_str().unwrap()));
+        let (date, rest) = content.split_once('\n').unwrap_or_else(|| {
+            panic!(
+                "{} does not have a date in the first line",
+                filename.to_str().unwrap()
+            )
+        });
         let date = date.replace("Date: ", "");
-        let date = chrono::naive::NaiveDate::parse_from_str(date.trim(), "%B %d, %Y").unwrap_or_else(|_| panic!("Invalid date format in {}", filename.to_str().unwrap()));
+        let date = chrono::naive::NaiveDate::parse_from_str(date.trim(), "%B %d, %Y")
+            .unwrap_or_else(|_| panic!("Invalid date format in {}", filename.to_str().unwrap()));
 
         let html = markdown::to_html(rest);
         let with_classses = replace(&replacement_map, &html);
 
-        let (header, body) = with_classses.split_once('\n').unwrap_or_else(|| panic!("Blog {} does not have a title header",
-            filename.to_str().unwrap()));
+        let (header, body) = with_classses.split_once('\n').unwrap_or_else(|| {
+            panic!(
+                "Blog {} does not have a title header",
+                filename.to_str().unwrap()
+            )
+        });
         let (header, body) = (header.to_owned(), body.to_owned());
 
         let title = filename.to_str().unwrap().replace(".md", "");
@@ -147,13 +167,13 @@ fn main() -> std::io::Result<()> {
     post_objects.sort_by(|a, b| Ordering::reverse(a.date.cmp(&b.date)));
 
     for post @ InternalPost { title, .. } in post_objects.iter() {
-        titles.push(format!("{title}"));
+        titles.push(title.to_string());
         let json = serde_json::to_string_pretty(&Post::from(post.clone()))
             .unwrap_or_else(|_| panic!("Serializaion error in post: {title}"));
         let path = output.join(format!("{title}.json"));
         fs::write(path, json)?
     }
-    
+
     let titles_arr = serde_json::to_string_pretty(&titles).expect("Invalid title");
     let ts_file = format!("{POST_TYPE}\n\n export const posts: string[] = {titles_arr};");
 
@@ -161,7 +181,8 @@ fn main() -> std::io::Result<()> {
         path
     } else {
         output
-    }.join("posts.ts");
+    }
+    .join("posts.ts");
 
     fs::write(js, ts_file)
 }
